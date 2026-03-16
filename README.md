@@ -1,6 +1,6 @@
 # Corp.Lib.Refit
 
-[![NuGet Version](https://img.shields.io/badge/NuGet-10.0.2-blue)](https://www.nuget.org/)
+[![NuGet Version](https://img.shields.io/badge/NuGet-10.1.5-blue)](https://www.nuget.org/)
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/)
 
 A streamlined library for configuring and integrating [Refit](https://github.com/reactiveui/refit) HTTP clients in ASP.NET Core applications with built-in support for certificate-based authentication, correlation ID tracking, and flexible JSON serialization options.
@@ -28,7 +28,7 @@ A streamlined library for configuring and integrating [Refit](https://github.com
 ## Features
 
 - **Simplified Refit Integration**: Extension methods for `WebApplicationBuilder` and `IServiceCollection` to streamline Refit client configuration
-- **Certificate-Based Authentication**: Built-in support for PKCS#12 certificates with TLS 1.2 security
+- **Certificate-Based Authentication**: Built-in support for PKCS#12 certificates with TLS 1.2 security, as well as certificate store lookup by thumbprint
 - **Correlation ID Propagation**: Automatic correlation ID tracking across service calls via `CorrelationIdMessageHandler`
 - **Flexible JSON Serialization**: Support for both `System.Text.Json` (default, recommended) and `Newtonsoft.Json`
 - **HTTP Version Control**: Configure HTTP version policies for optimal performance
@@ -53,7 +53,7 @@ Install-Package Corp.Lib.Refit
 - **.NET 10.0** or later
 - **ASP.NET Core** application (Web API, Razor Pages, or MVC)
 - **Corp.Lib.Logging** package (automatically included as a dependency)
-- Valid **PKCS#12 certificate** (`.pfx` file) for client authentication
+- Valid **PKCS#12 certificate** (`.pfx` file) for client authentication, **or** a certificate installed in the **local machine certificate store** (referenced by thumbprint)
 
 ## Quick Start
 
@@ -71,6 +71,25 @@ builder.AddRefitClient<IWeatherService, WeatherService, IWeatherApiClient>(
     serviceBaseAddress: "https://api.weather.example.com/v1",
     certificatePath: "/certs/client.pfx",
     password: "your-certificate-password"
+);
+
+var app = builder.Build();
+app.Run();
+```
+
+Alternatively, if you have a certificate in the local machine store, reference it by thumbprint:
+
+```csharp
+// Program.cs
+using Corp.Lib.Refit.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register your Refit client using a certificate thumbprint
+builder.AddRefitClient<IWeatherService, WeatherService, IWeatherApiClient>(
+    httpClientName: "WeatherApi",
+    serviceBaseAddress: "https://api.weather.example.com/v1",
+    certificateThumbprint: "AB12CD34EF56..."
 );
 
 var app = builder.Build();
@@ -407,6 +426,37 @@ var app = builder.Build();
 app.Run();
 ```
 
+#### Using Certificate Store Thumbprint
+
+If you prefer to use a certificate installed in the local machine certificate store instead of a `.pfx` file:
+
+```csharp
+// Program.cs
+using Corp.Lib.Refit.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Option 1: Basic registration with certificate thumbprint
+builder.AddRefitClient<IWeatherService, WeatherService, IWeatherApiClient>(
+    httpClientName: "WeatherApi",
+    serviceBaseAddress: "https://api.weather.example.com/v1",
+    certificateThumbprint: builder.Configuration["Api:CertificateThumbprint"]!
+);
+
+// Option 2: Registration with explicit version control and certificate thumbprint
+builder.AddRefitClient<IWeatherService, WeatherService, IWeatherApiClient>(
+    httpClientName: "WeatherApi",
+    serviceBaseAddress: "https://api.weather.example.com",
+    version: new Version(2, 0),
+    certificateThumbprint: builder.Configuration["Api:CertificateThumbprint"]!
+);
+
+var app = builder.Build();
+app.Run();
+```
+
+> **Note**: Thumbprint-based overloads always use `System.Text.Json` for serialization. The certificate must be installed in the `LocalMachine\My` store.
+
 #### Configuration via appsettings.json
 
 ```json
@@ -658,21 +708,31 @@ builder.AddRefitClient<IWeatherService, WeatherService, IWeatherApiClient>(
 
 | Method | Description |
 |--------|-------------|
-| `AddRefitClient<TServiceInterface, TServiceImplementation, TRefitServiceInterface>(builder, httpClientName, serviceBaseAddress, certificatePath, password)` | Basic registration with certificate authentication |
-| `AddRefitClient<TServiceInterface, TServiceImplementation, TRefitServiceInterface>(builder, httpClientName, serviceBaseAddress, version, certificatePath, password)` | Registration with explicit HTTP version |
-| `AddRefitClient<TServiceInterface, TServiceImplementation, TRefitServiceInterface>(builder, httpClientName, serviceBaseAddress, certificatePath, password, useNewtonsoft)` | Registration with Newtonsoft.Json option (deprecated) |
-| `AddRefitClient<TServiceInterface, TServiceImplementation, TRefitServiceInterface>(builder, httpClientName, serviceBaseAddress, version, certificatePath, password, useNewtonsoft)` | Full configuration (deprecated) |
+| `AddRefitClient<...>(builder, httpClientName, serviceBaseAddress, certificatePath, password)` | Basic registration with certificate file authentication |
+| `AddRefitClient<...>(builder, httpClientName, serviceBaseAddress, version, certificatePath, password)` | Registration with certificate file and explicit HTTP version |
+| `AddRefitClient<...>(builder, httpClientName, serviceBaseAddress, certificateThumbprint)` | Registration with certificate store thumbprint |
+| `AddRefitClient<...>(builder, httpClientName, serviceBaseAddress, version, certificateThumbprint)` | Registration with certificate store thumbprint and explicit HTTP version |
+| `AddRefitClient<...>(builder, httpClientName, serviceBaseAddress, certificatePath, password, useNewtonsoft)` | Registration with Newtonsoft.Json option (deprecated) |
+| `AddRefitClient<...>(builder, httpClientName, serviceBaseAddress, version, certificatePath, password, useNewtonsoft)` | Full configuration with Newtonsoft.Json option (deprecated) |
 
 ### IServiceCollection Extensions
 
 All the same methods are available on `IServiceCollection` for scenarios where you don't have access to `WebApplicationBuilder`:
 
 ```csharp
+// Certificate file
 services.AddRefitClient<TServiceInterface, TServiceImplementation, TRefitServiceInterface>(
     httpClientName,
     serviceBaseAddress,
     certificatePath,
     password
+);
+
+// Certificate store thumbprint
+services.AddRefitClient<TServiceInterface, TServiceImplementation, TRefitServiceInterface>(
+    httpClientName,
+    serviceBaseAddress,
+    certificateThumbprint
 );
 ```
 
@@ -761,6 +821,16 @@ The library automatically adds correlation ID tracking via `CorrelationIdMessage
 - Check that the certificate is a valid PKCS#12 (.pfx) file
 - On Linux, ensure proper file permissions
 
+### Certificate Not Found in Store
+
+**Problem**: `InvalidOperationException` — certificate with thumbprint not found
+
+**Solutions**:
+- Verify the thumbprint value is correct (no extra spaces or invisible characters)
+- Ensure the certificate is installed in the `LocalMachine\My` (Personal) store
+- Run the application with sufficient permissions to access the machine certificate store
+- Use the Certificate Manager (`certlm.msc`) to confirm the certificate is present
+
 ### Connection Refused
 
 **Problem**: `HttpRequestException` with connection refused
@@ -803,9 +873,9 @@ The library automatically adds correlation ID tracking via `CorrelationIdMessage
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| [Refit.HttpClientFactory](https://github.com/reactiveui/refit) | 9.0.2 | HttpClientFactory integration for Refit |
-| [Refit.Newtonsoft.Json](https://github.com/reactiveui/refit) | 9.0.2 | Newtonsoft.Json serialization support |
-| [Corp.Lib.Logging](https://dev.azure.com/IT-Specialty/Projects/_git/Corp.Solution.Logging) | 10.0.3 | Correlation ID message handler and logging |
+| [Refit.HttpClientFactory](https://github.com/reactiveui/refit) | 10.0.1 | HttpClientFactory integration for Refit |
+| [Refit.Newtonsoft.Json](https://github.com/reactiveui/refit) | 10.0.1 | Newtonsoft.Json serialization support |
+| [Corp.Lib.Logging](https://dev.azure.com/IT-Specialty/Projects/_git/Corp.Solution.Logging) | 10.1.4 | Correlation ID message handler and logging |
 
 ## License
 
